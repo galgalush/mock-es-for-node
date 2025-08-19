@@ -1,4 +1,5 @@
 import { MockElasticSearchClient } from '../src/MockElasticSearchClient';
+import { MockClock } from '../src/Clock';
 
 describe('MockElasticSearchClient', () => {
   let client: MockElasticSearchClient;
@@ -287,7 +288,207 @@ describe('MockElasticSearchClient', () => {
 
       expect(results.body.hits.hits).toHaveLength(3);
     });
+
+    it('should handle range queries with numbers', async () => {
+      const results = await client.search({
+        index: 'countries',
+        body: {
+          query: {
+            range: { population: { gte: 50000000 } }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(2); // USA and France
+      results.body.hits.hits.forEach(hit => {
+        expect(hit._source.population).toBeGreaterThanOrEqual(50000000);
+      });
+    });
+
+    it('should handle range queries with multiple conditions', async () => {
+      const results = await client.search({
+        index: 'countries',
+        body: {
+          query: {
+            range: { 
+              population: { 
+                gte: 30000000,
+                lte: 70000000 
+              } 
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(2); // Canada and France
+    });
+
+    it('should handle combined bool and range queries', async () => {
+      const results = await client.search({
+        index: 'countries',
+        body: {
+          query: {
+            bool: {
+              must: [
+                { term: { continent: 'North America' } },
+                { range: { population: { gt: 40000000 } } }
+              ]
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(1); // Only USA
+      expect(results.body.hits.hits[0]._source.country).toBe('USA');
+    });
   });
+
+  describe('range queries with dates', () => {
+    beforeEach(async () => {
+      client.clear();
+      
+      // Index documents with date fields
+      await client.index({
+        index: 'events',
+        body: {
+          name: 'Event 1',
+          createdAt: '2024-01-15T10:00:00Z',
+          date: '2024-01-15'
+        },
+      });
+
+      await client.index({
+        index: 'events',
+        body: {
+          name: 'Event 2',
+          createdAt: '2024-01-10T15:30:00Z',
+          date: '2024-01-10'
+        },
+      });
+
+      await client.index({
+        index: 'events',
+        body: {
+          name: 'Event 3',
+          createdAt: '2024-01-20T09:15:00Z',
+          date: '2024-01-20'
+        },
+      });
+    });
+
+    it('should handle date range queries with ISO strings', async () => {
+      const results = await client.search({
+        index: 'events',
+        body: {
+          query: {
+            range: {
+              createdAt: {
+                gte: '2024-01-12T00:00:00Z',
+                lte: '2024-01-18T23:59:59Z'
+              }
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(1);
+      expect(results.body.hits.hits[0]._source.name).toBe('Event 1');
+    });
+
+    it('should handle date-only range queries', async () => {
+      const results = await client.search({
+        index: 'events',
+        body: {
+          query: {
+            range: {
+              date: {
+                gte: '2024-01-15'
+              }
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(2); // Event 1 and Event 3
+    });
+  });
+
+  describe('date math integration with MockClock', () => {
+    let mockClock: MockClock;
+    let clientWithMockClock: MockElasticSearchClient;
+
+    beforeEach(async () => {
+      mockClock = new MockClock('2024-01-01');
+      clientWithMockClock = new MockElasticSearchClient(mockClock);
+      
+      // Index test data
+      await clientWithMockClock.index({
+        index: 'events',
+        body: {
+          name: 'Recent Event',
+          timestamp: '2023-12-31' // 1 day ago from mock time
+        }
+      });
+
+      await clientWithMockClock.index({
+        index: 'events',
+        body: {
+          name: 'Old Event',
+          timestamp: '2023-12-27' // 5 days ago from mock time
+        }
+      });
+
+      await clientWithMockClock.index({
+        index: 'events',
+        body: {
+          name: 'Future Event',
+          timestamp: '2024-01-02' // 1 day in future from mock time
+        }
+      });
+    });
+
+    it('should handle date math expressions in range queries', async () => {
+      // Find events from the last 2 days
+      const results = await clientWithMockClock.search({
+        index: 'events',
+        body: {
+          query: {
+            range: {
+              timestamp: { gte: 'now-2d' }
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(2); // Recent Event and Future Event
+      const eventNames = results.body.hits.hits.map(hit => hit._source.name);
+      expect(eventNames).toContain('Recent Event');
+      expect(eventNames).toContain('Future Event');
+      expect(eventNames).not.toContain('Old Event');
+    });
+
+    it('should handle complex date math with bool queries', async () => {
+      const results = await clientWithMockClock.search({
+        index: 'events',
+        body: {
+          query: {
+            bool: {
+              must: [
+                { range: { timestamp: { gte: 'now-3d' } } },
+                { range: { timestamp: { lte: 'now+1d' } } }
+              ]
+            }
+          }
+        }
+      });
+
+      expect(results.body.hits.hits).toHaveLength(2); // Recent Event and Future Event (but not Old Event)
+    });
+
+
+  });
+
+
 
   describe('clear method', () => {
     it('should clear all indexed data', async () => {
