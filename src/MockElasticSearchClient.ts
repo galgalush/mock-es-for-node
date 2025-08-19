@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { RangeFilter, RangeQuery } from './RangeFilter';
+import { Clock } from './Clock';
 
 export interface IndexRequest {
   index: string;
@@ -29,6 +31,11 @@ type Index = Map<string, any>;
 
 export class MockElasticSearchClient {
   private indexes: Map<string, Index> = new Map();
+  private rangeFilter: RangeFilter;
+
+  constructor(clock?: Clock) {
+    this.rangeFilter = new RangeFilter(clock);
+  }
 
   async index(request: IndexRequest): Promise<void> {
     const { index: indexName, body, id } = request;
@@ -114,6 +121,11 @@ export class MockElasticSearchClient {
       return this.matchesTermsQuery(document, query.terms);
     }
     
+    // Handle range queries
+    if (query.range) {
+      return this.matchesRangeQuery(document, query.range);
+    }
+    
     // Handle match_all queries
     if (query.match_all) {
       return true;
@@ -182,6 +194,16 @@ export class MockElasticSearchClient {
     return true;
   }
   
+  private matchesRangeQuery(document: any, rangeQuery: any): boolean {
+    for (const [field, rangeConditions] of Object.entries(rangeQuery)) {
+      const fieldValue = this.getNestedValue(document, field);
+      if (!this.rangeFilter.isMatch(rangeConditions as RangeQuery, fieldValue)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private getNestedValue(obj: any, path: string): any {
     return path.split('.').reduce((current, key) => {
       return current && current[key] !== undefined ? current[key] : undefined;
